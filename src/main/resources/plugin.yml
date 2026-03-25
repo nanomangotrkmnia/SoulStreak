@@ -1,0 +1,26 @@
+name: SoulStreak
+version: 1.0.0
+main: dev.nanomango.soulstreak.SoulStreak
+api-version: 1.21
+author: nanomango.dev
+description: A PvP streak system with tier-based bonuses and heart management (Folia compatible)
+website: https://nanomango.dev
+folia-supported: true
+
+commands:
+  streak:
+    description: SoulStreak main command
+    usage: /streak [help|withdraw|remove|reset]
+    permission: soulstreak.use
+    tab-completer: true
+  
+permissions:
+  soulstreak.use:
+    description: Use basic SoulStreak commands
+    default: true
+  soulstreak.withdraw:
+    description: Withdraw bonus hearts as items
+    default: op
+  soulstreak.admin:
+    description: Use admin commands
+    default: op

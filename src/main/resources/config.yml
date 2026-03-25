@@ -1,0 +1,14 @@
+# StreakSoul Configuration File
+
+# How many streak points a player loses when killed by another player
+streak-loss-on-death: 3
+
+# Whether players lose 1 heart when killed with no streak
+lose-heart-on-no-streak-death: true
+
+# Maximum number of hearts a player can have (prevents heart abuse)
+max-hearts: 10
+
+# Whether natural deaths (mobs, lava, fall damage, etc.) affect anything
+# If true, natural deaths have no effects at all
+natural-deaths-affect-nothing: true

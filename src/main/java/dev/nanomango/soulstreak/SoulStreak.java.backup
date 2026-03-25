@@ -1,0 +1,973 @@
+package dev.nanomango.soulstreak;
+
+import org.bukkit.Bukkit;
+import org.bukkit.ChatColor;
+import org.bukkit.Material;
+import org.bukkit.NamespacedKey;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
+import org.bukkit.command.Command;
+import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.Listener;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.AsyncPlayerChatEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.meta.ItemMeta;
+import org.bukkit.inventory.ShapedRecipe;
+import org.bukkit.persistence.PersistentDataContainer;
+import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.plugin.java.JavaPlugin;
+
+import dev.nanomango.soulstreak.commands.CommandHandler;
+import dev.nanomango.soulstreak.commands.HelpCommand;
+import dev.nanomango.soulstreak.commands.WithdrawCommand;
+import dev.nanomango.soulstreak.config.ConfigManager;
+import dev.nanomango.soulstreak.managers.TabListManager;
+import dev.nanomango.soulstreak.tiers.TierManager;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * Main plugin class for SoulStreak
+ * Optimized version with improved performance, maintainability, and robustness
+ */
+public class SoulStreak extends JavaPlugin implements Listener, TabCompleter {
+
+    // Core components
+    private NamespacedKey streakKey;
+    private NamespacedKey heartsKey;
+    private ConfigManager configManager;
+    private TierManager tierManager;
+    private TabListManager tabListManager;
+    private Object tabUpdateTask;
+    
+    // Command handlers
+    private final Map<String, CommandHandler> commandHandlers = new HashMap<>();
+
+    @Override
+    public void onEnable() {
+        this.streakKey = new NamespacedKey(this, "player_streak");
+        this.heartsKey = new NamespacedKey(this, "player_hearts");
+        
+        // Check if running on Folia
+        boolean isFolia = false;
+        try {
+            Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalScheduler");
+            getLogger().info("Folia detected - Using Folia scheduler!");
+            isFolia = true;
+        } catch (ClassNotFoundException e) {
+            getLogger().info("Bukkit detected - Using Bukkit scheduler!");
+        }
+        
+        // Load configuration
+        saveDefaultConfig();
+        loadConfiguration();
+        
+        Bukkit.getPluginManager().registerEvents(this, this);
+        
+        // Set up command executor and tab completer
+        this.getCommand("streak").setExecutor(this);
+        this.getCommand("streak").setTabCompleter(this);
+        
+        // Start tab update task
+        startTabUpdateTask(isFolia);
+        
+        // Add heart crafting recipe
+        addHeartRecipe();
+        
+        getLogger().info("SoulStreak v2.0.0 - Folia Compatible Version with Hearts - Enabled!");
+    }
+
+    @EventHandler
+    public void onJoin(PlayerJoinEvent event) {
+        Player player = event.getPlayer();
+        loadHeartData(player);
+        applyTierEffects(player);
+        updatePlayerTabList(player);
+    }
+    
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        // Clean up tab list when player leaves
+        Player player = event.getPlayer();
+        player.setPlayerListName(player.getName());
+    }
+
+    @EventHandler
+    public void onKill(PlayerDeathEvent event) {
+        Player victim = event.getEntity();
+        Player killer = victim.getKiller();
+
+        int victimStreak = getStreak(victim);
+        boolean wasStreakEnded = false;
+        
+        // Handle death mechanics
+        if (killer != null && !killer.equals(victim)) {
+            // PvP death - lose 3 streak
+            int newVictimStreak = Math.max(victimStreak - streakLossOnDeath, 0);
+            setStreak(victim, newVictimStreak);
+            
+            // Lose heart on death with randomized chance
+            AttributeInstance maxHealth = victim.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+            if (maxHealth != null) {
+                double currentHealth = maxHealth.getBaseValue();
+                
+                // Only lose hearts if above minimum (2 hearts)
+                if (currentHealth > 4.0) {
+                    double random = Math.random();
+                    double heartsLost;
+                    
+                    if (random < 0.35) {
+                        heartsLost = 2.0; // 1 heart (35% chance)
+                    } else {
+                        heartsLost = 4.0; // 2 hearts (65% chance)
+                    }
+                    
+                    double newHealth = Math.max(currentHealth - heartsLost, 4.0); // Min 2 hearts
+                    maxHealth.setBaseValue(newHealth);
+                    saveHeartData(victim, newHealth);
+                    
+                    victim.sendMessage(ChatColor.RED + "You died and lost " + (int)(heartsLost / 2) + " heart(s)!");
+                    victim.sendMessage(ChatColor.YELLOW + "Current hearts: " + (int)(newHealth / 2));
+                }
+            }
+            
+            if (victimStreak > 0 && newVictimStreak == 0) {
+                wasStreakEnded = true;
+                String deathMessage = formatStreakEndMessage(victim, killer);
+                event.setDeathMessage(deathMessage);
+            } else if (newVictimStreak < victimStreak) {
+                victim.sendMessage(ChatColor.RED + "You lost " + streakLossOnDeath + " streak! Current streak: " + newVictimStreak);
+            }
+            
+            // Killer gains 1 streak (max 15)
+            int currentStreak = getStreak(killer);
+            if (currentStreak < 15) {
+                setStreak(killer, currentStreak + 1);
+                applyTierEffects(killer);
+                killer.sendMessage(ChatColor.GREEN + "Kill streak: " + (currentStreak + 1) + "!");
+                
+            }
+        } else {
+            // Natural death - no effects at all
+            if (naturalDeathsAffectNothing) {
+                // Completely silent natural deaths
+            }
+        }
+        
+        // Update tab list for all players
+        updateAllTabLists();
+    }
+
+    @EventHandler
+    public void onPlayerInteract(PlayerInteractEvent event) {
+        if (event.getAction().toString().contains("RIGHT_CLICK") && event.hasItem()) {
+            ItemStack item = event.getItem();
+            
+            if (isHeartItem(item)) {
+                event.setCancelled(true);
+                Player player = event.getPlayer();
+                
+                AttributeInstance maxHealth = player.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+                if (maxHealth != null && maxHealth.getBaseValue() < maxHearts * 2) {
+                    // Remove the heart item after use
+                    if (item.getAmount() > 1) {
+                        item.setAmount(item.getAmount() - 1);
+                    } else {
+                        player.getInventory().removeItem(item);
+                    }
+                    
+                    double newHealth = Math.min(maxHealth.getBaseValue() + 2.0, maxHearts * 2);
+                    maxHealth.setBaseValue(newHealth);
+                    saveHeartData(player, newHealth);
+                    
+                    player.sendMessage(ChatColor.GREEN + "Heart consumed! +1 heart restored.");
+                    player.sendMessage(ChatColor.YELLOW + "Current hearts: " + (int)(newHealth / 2) + "/" + maxHearts);
+                } else {
+                    player.sendMessage(ChatColor.RED + "You already have maximum hearts!");
+                }
+            }
+        }
+    }
+
+    private int getStreak(Player p) {
+        return p.getPersistentDataContainer().getOrDefault(streakKey, PersistentDataType.INTEGER, 0);
+    }
+
+    private void setStreak(Player p, int amount) {
+        p.getPersistentDataContainer().set(streakKey, PersistentDataType.INTEGER, amount);
+    }
+
+    private void updateHealth(Player p, double health) {
+        AttributeInstance maxHealth = p.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+        if (maxHealth != null) {
+            maxHealth.setBaseValue(health);
+            saveHeartData(p, health);
+        }
+    }
+
+    private void saveHeartData(Player player, double health) {
+        player.getPersistentDataContainer().set(heartsKey, PersistentDataType.DOUBLE, health);
+    }
+
+    private void loadHeartData(Player player) {
+        AttributeInstance maxHealth = player.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+        if (maxHealth != null) {
+            double savedHealth = player.getPersistentDataContainer().getOrDefault(heartsKey, PersistentDataType.DOUBLE, 20.0);
+            // Ensure the saved health is within valid bounds
+            savedHealth = Math.max(4.0, Math.min(savedHealth, maxHearts * 2.0));
+            maxHealth.setBaseValue(savedHealth);
+        }
+    }
+
+    private void applyTierEffects(Player p) {
+        int streak = getStreak(p);
+        
+        // Clear old effects
+        p.removePotionEffect(PotionEffectType.FIRE_RESISTANCE);
+        p.removePotionEffect(PotionEffectType.STRENGTH);
+        p.removePotionEffect(PotionEffectType.SPEED);
+
+        if (streak >= 15) { // Tier 4
+            updateHealth(p, 30.0); // +5 hearts
+            p.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, -1, 0, false, false));
+            p.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, -1, 1, false, false)); // Strength 1
+            p.addPotionEffect(new PotionEffect(PotionEffectType.SPEED, -1, 0, false, false)); // Speed 1
+            p.sendMessage(ChatColor.GOLD + "" + ChatColor.BOLD + "TIER 4: Strength 1, Speed 1, Fire Resistance & +5 Hearts!");
+        }
+        else if (streak >= 10) { // Tier 3
+            updateHealth(p, 26.0); // +3 hearts
+            p.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, -1, 0, false, false));
+            p.addPotionEffect(new PotionEffect(PotionEffectType.STRENGTH, -1, 1, false, false)); // Strength 1
+            p.sendMessage(ChatColor.DARK_RED + "" + ChatColor.BOLD + "TIER 3: Strength 1, Fire Resistance & +3 Hearts!");
+        }
+        else if (streak >= 5) { // Tier 2
+            updateHealth(p, 24.0); // +2 hearts
+            p.addPotionEffect(new PotionEffect(PotionEffectType.FIRE_RESISTANCE, -1, 0, false, false));
+            p.sendMessage(ChatColor.AQUA + "Tier 2: Fire Resistance & +2 Hearts!");
+        }
+        else if (streak >= 3) { // Tier 1
+            p.sendMessage(ChatColor.GREEN + "Tier 1: Reached 3 kills!");
+        }
+        else {
+            updateHealth(p, 20.0);
+        }
+    }
+
+    private String getTierName(int streak) {
+        if (streak >= 15) return ChatColor.GOLD + "" + ChatColor.BOLD + "[Tier 4]";
+        if (streak >= 10) return ChatColor.DARK_RED + "" + ChatColor.BOLD + "[Tier 3]";
+        if (streak >= 5) return ChatColor.AQUA + "[Tier 2]";
+        if (streak >= 3) return ChatColor.GREEN + "[Tier 1]";
+        if (streak >= 1) return ChatColor.GRAY + "[Streaking]";
+        return ChatColor.GRAY + "[No Streak]";
+    }
+
+    @Override
+    public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (!(sender instanceof Player)) {
+            sender.sendMessage(ChatColor.RED + "This command can only be used by players.");
+            return true;
+        }
+        
+        Player player = (Player) sender;
+        
+        if (args.length == 0) {
+            // Show current streak
+            int streak = getStreak(player);
+            String tier = getTierName(streak);
+            player.sendMessage(ChatColor.GOLD + "Your current streak: " + ChatColor.WHITE + streak + " " + tier);
+            return true;
+        }
+        
+        String subCommand = args[0].toLowerCase();
+        
+        switch (subCommand) {
+            case "help":
+                sendHelpMessage(player);
+                break;
+                
+            case "withdraw":
+                if (!player.hasPermission("soulstreak.withdraw")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                withdrawHearts(player);
+                break;
+                
+            case "give":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                if (args.length < 3) {
+                    player.sendMessage(ChatColor.RED + "Usage: /streak give <player> <item> [amount]");
+                    player.sendMessage(ChatColor.GRAY + "Items: heart");
+                    return true;
+                }
+                giveItem(player, args[1], args[2], args.length > 3 ? args[3] : "1");
+                break;
+                
+            case "setstreak":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                if (args.length < 3) {
+                    player.sendMessage(ChatColor.RED + "Usage: /streak setstreak <player> <amount>");
+                    return true;
+                }
+                setPlayerStreak(player, args[1], args[2]);
+                break;
+                
+            case "addhearts":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                if (args.length < 3) {
+                    player.sendMessage(ChatColor.RED + "Usage: /streak addhearts <player> <amount>");
+                    return true;
+                }
+                addHearts(player, args[1], args[2]);
+                break;
+                
+            case "toggle":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                if (args.length < 2) {
+                    player.sendMessage(ChatColor.RED + "Usage: /streak toggle <setting>");
+                    player.sendMessage(ChatColor.GRAY + "Settings: naturaldeaths, heartloss");
+                    return true;
+                }
+                toggleSetting(player, args[1]);
+                break;
+                
+            case "reset":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                if (args.length < 2) {
+                    player.sendMessage(ChatColor.RED + "Usage: /streak reset <player> [effects|streak|hearts|all]");
+                    return true;
+                }
+                resetPlayerData(player, args[1], args.length > 2 ? args[2] : "all");
+                break;
+                
+            case "config":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                if (args.length < 3) {
+                    showConfig(player);
+                    return true;
+                }
+                setConfigValue(player, args[1], args[2]);
+                break;
+                
+            case "reload":
+                if (!player.hasPermission("soulstreak.admin")) {
+                    player.sendMessage(ChatColor.RED + "You don't have permission to use this command.");
+                    return true;
+                }
+                reloadConfig();
+                loadConfiguration();
+                player.sendMessage(ChatColor.GREEN + "Configuration reloaded!");
+                break;
+                
+            default:
+                player.sendMessage(ChatColor.RED + "Unknown subcommand. Use /streak help for available commands.");
+                break;
+        }
+        
+        return true;
+    }
+    
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
+        List<String> completions = new ArrayList<>();
+        
+        if (args.length == 1) {
+            List<String> subCommands = Arrays.asList("help", "withdraw");
+            if (sender.hasPermission("soulstreak.admin")) {
+                subCommands = Arrays.asList("help", "withdraw", "give", "setstreak", "addhearts", "reset", "toggle", "config", "reload");
+            }
+            
+            String current = args[0].toLowerCase();
+            completions = subCommands.stream()
+                .filter(cmd -> cmd.toLowerCase().startsWith(current))
+                .collect(Collectors.toList());
+        } else if (args.length == 2) {
+            String subCommand = args[0].toLowerCase();
+            if (subCommand.equals("reset") && sender.hasPermission("soulstreak.admin")) {
+                // Tab complete player names
+                for (Player onlinePlayer : Bukkit.getOnlinePlayers()) {
+                    if (onlinePlayer.getName().toLowerCase().startsWith(args[1].toLowerCase())) {
+                        completions.add(onlinePlayer.getName());
+                    }
+                }
+            }
+            else if (subCommand.equals("give") && sender.hasPermission("soulstreak.admin")) {
+                // Tab complete player names
+                for (Player onlinePlayer : Bukkit.getOnlinePlayers()) {
+                    if (onlinePlayer.getName().toLowerCase().startsWith(args[1].toLowerCase())) {
+                        completions.add(onlinePlayer.getName());
+                    }
+                }
+            }
+            else if (subCommand.equals("setstreak") && sender.hasPermission("soulstreak.admin")) {
+                // Tab complete player names
+                for (Player onlinePlayer : Bukkit.getOnlinePlayers()) {
+                    if (onlinePlayer.getName().toLowerCase().startsWith(args[1].toLowerCase())) {
+                        completions.add(onlinePlayer.getName());
+                    }
+                }
+            }
+            else if (subCommand.equals("addhearts") && sender.hasPermission("soulstreak.admin")) {
+                // Tab complete player names
+                for (Player onlinePlayer : Bukkit.getOnlinePlayers()) {
+                    if (onlinePlayer.getName().toLowerCase().startsWith(args[1].toLowerCase())) {
+                        completions.add(onlinePlayer.getName());
+                    }
+                }
+            }
+            else if (subCommand.equals("toggle") && sender.hasPermission("soulstreak.admin")) {
+                List<String> toggleOptions = Arrays.asList("naturaldeaths", "heartloss");
+                String current = args[1].toLowerCase();
+                completions = toggleOptions.stream()
+                    .filter(option -> option.toLowerCase().startsWith(current))
+                    .collect(Collectors.toList());
+            }
+            else if (subCommand.equals("config") && sender.hasPermission("soulstreak.admin")) {
+                List<String> configKeys = Arrays.asList("streak-loss-on-death", "lose-heart-on-no-streak-death", "max-hearts", "natural-deaths-affect-nothing");
+                String current = args[1].toLowerCase();
+                completions = configKeys.stream()
+                    .filter(key -> key.toLowerCase().startsWith(current))
+                    .collect(Collectors.toList());
+            }
+        } else if (args.length == 3) {
+            String subCommand = args[0].toLowerCase();
+            if (subCommand.equals("reset") && sender.hasPermission("soulstreak.admin")) {
+                List<String> resetTypes = Arrays.asList("effects", "streak", "hearts", "all");
+                String current = args[2].toLowerCase();
+                completions = resetTypes.stream()
+                    .filter(type -> type.toLowerCase().startsWith(current))
+                    .collect(Collectors.toList());
+            }
+            else if (subCommand.equals("give") && sender.hasPermission("soulstreak.admin")) {
+                List<String> itemTypes = Arrays.asList("heart");
+                String current = args[2].toLowerCase();
+                completions = itemTypes.stream()
+                    .filter(type -> type.toLowerCase().startsWith(current))
+                    .collect(Collectors.toList());
+            }
+        }
+        
+        return completions;
+    }
+    
+    private void sendHelpMessage(Player player) {
+        player.sendMessage(ChatColor.GOLD + "=== SoulStreak Base Version with Hearts ===");
+        player.sendMessage(ChatColor.YELLOW + "/streak" + ChatColor.WHITE + " - Show your current streak");
+        player.sendMessage(ChatColor.YELLOW + "/streak help" + ChatColor.WHITE + " - Show this help message");
+        
+        if (player.hasPermission("soulstreak.withdraw")) {
+            player.sendMessage(ChatColor.YELLOW + "/streak withdraw" + ChatColor.WHITE + " - Withdraw bonus hearts as items");
+        }
+        
+        if (player.hasPermission("soulstreak.admin")) {
+            player.sendMessage(ChatColor.RED + "=== Admin Commands ===");
+            player.sendMessage(ChatColor.YELLOW + "/streak setstreak <player> <amount>" + ChatColor.WHITE + " - Set player streak");
+            player.sendMessage(ChatColor.YELLOW + "/streak addhearts <player> <amount>" + ChatColor.WHITE + " - Add hearts to player");
+            player.sendMessage(ChatColor.YELLOW + "/streak reset <player> [type]" + ChatColor.WHITE + " - Reset player data (effects/streak/hearts/all)");
+            player.sendMessage(ChatColor.YELLOW + "/streak toggle <setting>" + ChatColor.WHITE + " - Toggle settings (naturaldeaths/heartloss)");
+            player.sendMessage(ChatColor.YELLOW + "/streak config <key> <value>" + ChatColor.WHITE + " - Configure settings");
+            player.sendMessage(ChatColor.YELLOW + "/streak reload" + ChatColor.WHITE + " - Reload configuration");
+        }
+        
+        player.sendMessage(ChatColor.GOLD + "=== Streak Tiers ===");
+        player.sendMessage(ChatColor.GRAY + "0-2 kills: No bonus");
+        player.sendMessage(ChatColor.GREEN + "3 kills: Tier 1 - Entry milestone");
+        player.sendMessage(ChatColor.AQUA + "5-9 kills: Tier 2 - Fire Resistance & +2 Hearts");
+        player.sendMessage(ChatColor.DARK_RED + "10-14 kills: Tier 3 - Fire Resistance, Strength & +3 Hearts");
+        player.sendMessage(ChatColor.GOLD + "15 kills: Tier 4 - Fire Resistance, Strength 1, Speed 1 & +5 Hearts");
+        player.sendMessage(ChatColor.RED + "Death Penalty: Lose 1 heart (35%) or 2 hearts (65%)");
+        player.sendMessage(ChatColor.YELLOW + "Hearts: Craftable (Diamond+Redstone) and withdrawable!");
+    }
+    
+    private void showConfig(Player player) {
+        player.sendMessage(ChatColor.GOLD + "=== SoulStreak Configuration ===");
+        player.sendMessage(ChatColor.YELLOW + "streak-loss-on-death: " + ChatColor.WHITE + streakLossOnDeath);
+        player.sendMessage(ChatColor.YELLOW + "lose-heart-on-no-streak-death: " + ChatColor.WHITE + loseHeartOnNoStreakDeath);
+        player.sendMessage(ChatColor.YELLOW + "max-hearts: " + ChatColor.WHITE + maxHearts);
+        player.sendMessage(ChatColor.YELLOW + "natural-deaths-affect-nothing: " + ChatColor.WHITE + naturalDeathsAffectNothing);
+        player.sendMessage(ChatColor.GRAY + "Use: /streak config <key> <value> to change");
+    }
+    
+    private void setConfigValue(Player player, String key, String value) {
+        switch (key.toLowerCase()) {
+            case "streak-loss-on-death":
+                try {
+                    int val = Integer.parseInt(value);
+                    if (val >= 0 && val <= 10) {
+                        streakLossOnDeath = val;
+                        getConfig().set("streak-loss-on-death", val);
+                        saveConfig();
+                        player.sendMessage(ChatColor.GREEN + "Set streak-loss-on-death to " + val);
+                    } else {
+                        player.sendMessage(ChatColor.RED + "Value must be between 0 and 10");
+                    }
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "Invalid number format");
+                }
+                break;
+                
+            case "lose-heart-on-no-streak-death":
+                boolean bool = Boolean.parseBoolean(value);
+                loseHeartOnNoStreakDeath = bool;
+                getConfig().set("lose-heart-on-no-streak-death", bool);
+                saveConfig();
+                player.sendMessage(ChatColor.GREEN + "Set lose-heart-on-no-streak-death to " + bool);
+                break;
+                
+            case "max-hearts":
+                try {
+                    int hearts = Integer.parseInt(value);
+                    if (hearts >= 1 && hearts <= 20) {
+                        maxHearts = hearts;
+                        getConfig().set("max-hearts", hearts);
+                        saveConfig();
+                        player.sendMessage(ChatColor.GREEN + "Set max-hearts to " + hearts);
+                    } else {
+                        player.sendMessage(ChatColor.RED + "Value must be between 1 and 20");
+                    }
+                } catch (NumberFormatException e) {
+                    player.sendMessage(ChatColor.RED + "Invalid number format");
+                }
+                break;
+                
+            case "natural-deaths-affect-nothing":
+                bool = Boolean.parseBoolean(value);
+                naturalDeathsAffectNothing = bool;
+                getConfig().set("natural-deaths-affect-nothing", bool);
+                saveConfig();
+                player.sendMessage(ChatColor.GREEN + "Set natural-deaths-affect-nothing to " + bool);
+                break;
+                
+            default:
+                player.sendMessage(ChatColor.RED + "Unknown config key: " + key);
+                break;
+        }
+    }
+    
+    private void withdrawHearts(Player player) {
+        AttributeInstance maxHealth = player.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+        if (maxHealth == null) {
+            player.sendMessage(ChatColor.RED + "Unable to access health attributes.");
+            return;
+        }
+        
+        double currentHealth = maxHealth.getBaseValue();
+        if (currentHealth <= 20.0) {
+            player.sendMessage(ChatColor.RED + "You don't have any bonus hearts to withdraw.");
+            return;
+        }
+        
+        double heartsToWithdraw = Math.min(currentHealth - 20.0, 10.0); // Max 10 hearts (20 health points)
+        int heartsAmount = (int) (heartsToWithdraw / 2.0);
+        
+        // Create heart items
+        ItemStack heartItem = new ItemStack(Material.RED_DYE, heartsAmount);
+        ItemMeta meta = heartItem.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(ChatColor.RED + "" + ChatColor.BOLD + "Bonus Heart");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "A withdrawn bonus heart.");
+            lore.add(ChatColor.YELLOW + "Right-click to restore 2 health points.");
+            meta.setLore(lore);
+            heartItem.setItemMeta(meta);
+        }
+        
+        // Give item and update health
+        player.getInventory().addItem(heartItem);
+        maxHealth.setBaseValue(currentHealth - heartsToWithdraw);
+        saveHeartData(player, currentHealth - heartsToWithdraw);
+        
+        player.sendMessage(ChatColor.GREEN + "Withdrew " + heartsAmount + " bonus hearts!");
+        player.sendMessage(ChatColor.YELLOW + "Right-click the heart items to restore health.");
+    }
+    
+    private void removeHearts(Player admin, String targetName, String amountStr) {
+        try {
+            int amount = Integer.parseInt(amountStr);
+            if (amount <= 0) {
+                admin.sendMessage(ChatColor.RED + "Amount must be a positive number.");
+                return;
+            }
+            
+            Player target = Bukkit.getPlayer(targetName);
+            if (target == null) {
+                admin.sendMessage(ChatColor.RED + "Player '" + targetName + "' not found.");
+                return;
+            }
+            
+            AttributeInstance maxHealth = target.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+            if (maxHealth == null) {
+                admin.sendMessage(ChatColor.RED + "Unable to access target's health attributes.");
+                return;
+            }
+            
+            double currentHealth = maxHealth.getBaseValue();
+            double newHealth = Math.max(currentHealth - (amount * 2.0), 2.0); // Min 1 heart
+            
+            maxHealth.setBaseValue(newHealth);
+            saveHeartData(target, newHealth);
+            
+            admin.sendMessage(ChatColor.GREEN + "Removed " + amount + " hearts from " + target.getName() + "!");
+            target.sendMessage(ChatColor.RED + "An admin removed " + amount + " hearts from you!");
+            
+        } catch (NumberFormatException e) {
+            admin.sendMessage(ChatColor.RED + "Invalid amount format.");
+        }
+    }
+    
+    private void resetPlayerData(Player admin, String targetName, String type) {
+        Player target = Bukkit.getPlayer(targetName);
+        if (target == null) {
+            admin.sendMessage(ChatColor.RED + "Player '" + targetName + "' not found.");
+            return;
+        }
+        
+        AttributeInstance maxHealth = target.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+        
+        switch (type.toLowerCase()) {
+            case "effects":
+                target.removePotionEffect(PotionEffectType.FIRE_RESISTANCE);
+                target.removePotionEffect(PotionEffectType.STRENGTH);
+                admin.sendMessage(ChatColor.GREEN + "Reset effects for " + target.getName());
+                break;
+                
+            case "streak":
+                setStreak(target, 0);
+                admin.sendMessage(ChatColor.GREEN + "Reset streak for " + target.getName());
+                break;
+                
+            case "hearts":
+                if (maxHealth != null) {
+                    maxHealth.setBaseValue(20.0);
+                    saveHeartData(target, 20.0);
+                    admin.sendMessage(ChatColor.GREEN + "Reset hearts for " + target.getName());
+                }
+                break;
+                
+            case "all":
+                target.removePotionEffect(PotionEffectType.FIRE_RESISTANCE);
+                target.removePotionEffect(PotionEffectType.STRENGTH);
+                target.removePotionEffect(PotionEffectType.SPEED);
+                setStreak(target, 0);
+                if (maxHealth != null) {
+                    maxHealth.setBaseValue(20.0);
+                    saveHeartData(target, 20.0);
+                }
+                admin.sendMessage(ChatColor.GREEN + "Reset all data for " + target.getName());
+                break;
+                
+            default:
+                admin.sendMessage(ChatColor.RED + "Invalid reset type. Use: effects, streak, hearts, or all");
+                break;
+        }
+        
+        // Apply tier effects after reset
+        applyTierEffects(target);
+        updatePlayerTabList(target);
+    }
+    
+    private String formatStreakEndMessage(Player victim, Player killer) {
+        ItemStack weapon = killer.getInventory().getItemInMainHand();
+        String weaponName = weapon.getType().toString().toLowerCase().replace("_", " ");
+        
+        if (weapon.hasItemMeta() && weapon.getItemMeta().hasDisplayName()) {
+            weaponName = weapon.getItemMeta().getDisplayName();
+        } else {
+            // Capitalize first letter of each word
+            String[] words = weaponName.split(" ");
+            StringBuilder formatted = new StringBuilder();
+            for (String word : words) {
+                if (word.length() > 0) {
+                    formatted.append(Character.toUpperCase(word.charAt(0)))
+                            .append(word.substring(1).toLowerCase())
+                            .append(" ");
+                }
+            }
+            weaponName = formatted.toString().trim();
+        }
+        
+        return ChatColor.RED + victim.getName() + "'s kill streak was ended by " + 
+               ChatColor.YELLOW + killer.getName() + ChatColor.RED + " using " + 
+               ChatColor.AQUA + weaponName + ChatColor.RED + "!";
+    }
+    
+    private void startTabUpdateTask(boolean isFolia) {
+        if (isFolia) {
+            // Use Folia scheduler
+            try {
+                Class<?> globalSchedulerClass = Class.forName("io.papermc.paper.threadedregions.scheduler.GlobalScheduler");
+                Method getGlobalScheduler = globalSchedulerClass.getMethod("getGlobalScheduler", org.bukkit.plugin.Plugin.class);
+                Object globalScheduler = getGlobalScheduler.invoke(null, this);
+                
+                Class<?> taskClass = Class.forName("io.papermc.paper.threadedregions.scheduler.ScheduledTask");
+                Method runAtFixedRate = globalSchedulerClass.getMethod("runAtFixedRate", org.bukkit.plugin.Plugin.class, Class.forName("io.papermc.paper.threadedregions.scheduler.ScheduledTask").getDeclaredClasses()[0], long.class, long.class);
+                
+                tabUpdateTask = runAtFixedRate.invoke(globalScheduler, this, (java.util.function.Consumer<Object>) task -> {
+                    updateAllTabLists();
+                }, 20L, 20L);
+            } catch (Exception e) {
+                getLogger().warning("Failed to use Folia scheduler, falling back to Bukkit: " + e.getMessage());
+                startBukkitTabUpdateTask();
+            }
+        } else {
+            // Use Bukkit scheduler
+            startBukkitTabUpdateTask();
+        }
+    }
+    
+    private void startBukkitTabUpdateTask() {
+        tabUpdateTask = new BukkitRunnable() {
+            @Override
+            public void run() {
+                updateAllTabLists();
+            }
+        }.runTaskTimer(this, 20L, 20L);
+    }
+    
+    private void loadConfiguration() {
+        streakLossOnDeath = getConfig().getInt("streak-loss-on-death", 3);
+        loseHeartOnNoStreakDeath = getConfig().getBoolean("lose-heart-on-no-streak-death", true);
+        maxHearts = getConfig().getInt("max-hearts", 10);
+        naturalDeathsAffectNothing = getConfig().getBoolean("natural-deaths-affect-nothing", true);
+    }
+    
+    // Heart item creation
+    private ItemStack createHeartItem() {
+        ItemStack heart = new ItemStack(Material.RED_DYE);
+        ItemMeta meta = heart.getItemMeta();
+        if (meta != null) {
+            meta.setDisplayName(ChatColor.RED + "" + ChatColor.BOLD + "Heart");
+            List<String> lore = new ArrayList<>();
+            lore.add(ChatColor.GRAY + "A precious heart that can restore");
+            lore.add(ChatColor.GRAY + "1 heart when consumed.");
+            lore.add(ChatColor.WHITE + "Right-click to use.");
+            meta.setLore(lore);
+            meta.addItemFlags(org.bukkit.inventory.ItemFlag.HIDE_ATTRIBUTES);
+            heart.setItemMeta(meta);
+        }
+        return heart;
+    }
+    
+    private boolean isHeartItem(ItemStack item) {
+        if (item == null || !item.hasItemMeta()) return false;
+        ItemMeta meta = item.getItemMeta();
+        return meta.hasDisplayName() && 
+               meta.getDisplayName().equals(ChatColor.RED + "" + ChatColor.BOLD + "Heart");
+    }
+    
+    // Heart crafting recipe
+    private void addHeartRecipe() {
+        // Create heart recipe (Diamond + Redstone)
+        NamespacedKey heartKey = new NamespacedKey(this, "heart_recipe");
+        
+        ItemStack result = createHeartItem();
+        
+        org.bukkit.inventory.ShapedRecipe recipe = new org.bukkit.inventory.ShapedRecipe(heartKey, result);
+        recipe.shape(" d ", "drd", " d ");
+        recipe.setIngredient('d', Material.DIAMOND);
+        recipe.setIngredient('r', Material.REDSTONE);
+        
+        Bukkit.addRecipe(recipe);
+        
+        getLogger().info("Heart crafting recipe added!");
+    }
+    
+    private void updateAllTabLists() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            updatePlayerTabList(player);
+        }
+    }
+    
+    private void updatePlayerTabList(Player player) {
+        int streak = getStreak(player);
+        String tier = getTierName(streak);
+        String displayName = tier + " " + player.getName();
+        
+        // Limit length to prevent issues
+        if (displayName.length() > 40) {
+            displayName = displayName.substring(0, 40);
+        }
+        
+        player.setPlayerListName(displayName);
+    }
+    
+    @EventHandler
+    public void onChat(AsyncPlayerChatEvent event) {
+        Player player = event.getPlayer();
+        int streak = getStreak(player);
+        String tier = getTierName(streak);
+        
+        String format = tier + " " + player.getName() + ": " + event.getMessage();
+        event.setFormat(format);
+    }
+    
+    @Override
+    public void onDisable() {
+        // Clean up tasks
+        if (tabUpdateTask != null) {
+            try {
+                // Try Bukkit task cancellation
+                if (tabUpdateTask instanceof org.bukkit.scheduler.BukkitTask) {
+                    ((org.bukkit.scheduler.BukkitTask) tabUpdateTask).cancel();
+                } else {
+                    // Try Folia task cancellation
+                    Class<?> taskClass = tabUpdateTask.getClass();
+                    Method cancel = taskClass.getMethod("cancel");
+                    cancel.invoke(tabUpdateTask);
+                }
+            } catch (Exception e) {
+                getLogger().warning("Failed to cancel task: " + e.getMessage());
+            }
+        }
+        
+        getLogger().info("SoulStreak v2.0.0 - Disabled!");
+    }
+    
+    private void giveItem(Player admin, String targetName, String itemType, String amountStr) {
+        Player target = Bukkit.getPlayer(targetName);
+        if (target == null) {
+            admin.sendMessage(ChatColor.RED + "Player '" + targetName + "' not found.");
+            return;
+        }
+        
+        int amount;
+        try {
+            amount = Integer.parseInt(amountStr);
+            if (amount <= 0) {
+                admin.sendMessage(ChatColor.RED + "Amount must be positive.");
+                return;
+            }
+        } catch (NumberFormatException e) {
+            admin.sendMessage(ChatColor.RED + "Invalid amount format.");
+            return;
+        }
+        
+        ItemStack item;
+        switch (itemType.toLowerCase()) {
+            case "heart":
+                item = createHeartItem();
+                break;
+            default:
+                admin.sendMessage(ChatColor.RED + "Invalid item type. Use: heart");
+                return;
+        }
+        
+        item.setAmount(amount);
+        target.getInventory().addItem(item);
+        
+        admin.sendMessage(ChatColor.GREEN + "Gave " + amount + " " + itemType + "(s) to " + target.getName() + "!");
+        target.sendMessage(ChatColor.YELLOW + "You received " + amount + " " + itemType + "(s) from an admin!");
+    }
+    
+    private void setPlayerStreak(Player admin, String targetName, String amountStr) {
+        Player target = Bukkit.getPlayer(targetName);
+        if (target == null) {
+            admin.sendMessage(ChatColor.RED + "Player '" + targetName + "' not found.");
+            return;
+        }
+        
+        int amount;
+        try {
+            amount = Integer.parseInt(amountStr);
+            if (amount < 0 || amount > 15) {
+                admin.sendMessage(ChatColor.RED + "Streak must be between 0 and 15.");
+                return;
+            }
+        } catch (NumberFormatException e) {
+            admin.sendMessage(ChatColor.RED + "Invalid amount format.");
+            return;
+        }
+        
+        setStreak(target, amount);
+        applyTierEffects(target);
+        updatePlayerTabList(target);
+        
+        admin.sendMessage(ChatColor.GREEN + "Set " + target.getName() + "'s streak to " + amount + "!");
+        target.sendMessage(ChatColor.YELLOW + "Your streak has been set to " + amount + " by an admin!");
+    }
+    
+    private void addHearts(Player admin, String targetName, String amountStr) {
+        Player target = Bukkit.getPlayer(targetName);
+        if (target == null) {
+            admin.sendMessage(ChatColor.RED + "Player '" + targetName + "' not found.");
+            return;
+        }
+        
+        int amount;
+        try {
+            amount = Integer.parseInt(amountStr);
+            if (amount <= 0) {
+                admin.sendMessage(ChatColor.RED + "Amount must be a positive number.");
+                return;
+            }
+        } catch (NumberFormatException e) {
+            admin.sendMessage(ChatColor.RED + "Invalid amount format.");
+            return;
+        }
+        
+        AttributeInstance maxHealth = target.getAttribute(Attribute.GENERIC_MAX_HEALTH);
+        if (maxHealth == null) {
+            admin.sendMessage(ChatColor.RED + "Unable to access target's health attributes.");
+            return;
+        }
+        
+        double currentHealth = maxHealth.getBaseValue();
+        double newHealth = Math.min(currentHealth + (amount * 2.0), maxHearts * 2);
+        
+        maxHealth.setBaseValue(newHealth);
+        saveHeartData(target, newHealth);
+        
+        int heartsAdded = (int) ((newHealth - currentHealth) / 2.0);
+        admin.sendMessage(ChatColor.GREEN + "Added " + heartsAdded + " hearts to " + target.getName() + "!");
+        target.sendMessage(ChatColor.GREEN + "An admin added " + heartsAdded + " hearts to you!");
+    }
+    
+    private void toggleSetting(Player admin, String setting) {
+        switch (setting.toLowerCase()) {
+            case "naturaldeaths":
+                naturalDeathsAffectNothing = !naturalDeathsAffectNothing;
+                getConfig().set("natural-deaths-affect-nothing", naturalDeathsAffectNothing);
+                saveConfig();
+                admin.sendMessage(ChatColor.GREEN + "Natural deaths affect nothing: " + naturalDeathsAffectNothing);
+                break;
+                
+            case "heartloss":
+                loseHeartOnNoStreakDeath = !loseHeartOnNoStreakDeath;
+                getConfig().set("lose-heart-on-no-streak-death", loseHeartOnNoStreakDeath);
+                saveConfig();
+                admin.sendMessage(ChatColor.GREEN + "Heart loss on no streak death: " + loseHeartOnNoStreakDeath);
+                break;
+                
+            default:
+                admin.sendMessage(ChatColor.RED + "Unknown setting. Use: naturaldeaths, heartloss");
+                break;
+        }
+    }
+}
