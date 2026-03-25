@@ -2,6 +2,7 @@ package dev.nanomango.soulstreak;
 
 import org.bukkit.ChatColor;
 import org.bukkit.Material;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.potion.PotionEffectType;
 
 /**

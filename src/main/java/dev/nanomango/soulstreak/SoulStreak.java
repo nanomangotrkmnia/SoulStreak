@@ -81,7 +81,7 @@ public class SoulStreak extends JavaPlugin implements Listener, TabCompleter {
         this.getCommand(Constants.MAIN_COMMAND).setTabCompleter(this);
         
         // Start tab update task
-        this.tabListManager = new TabListManager(tierManager, null);
+        this.tabListManager = new TabListManager(tierManager);
         this.tabUpdateTask = TabListManager.startTabUpdateTask(tabListManager, isFolia, this);
         
         // Add heart crafting recipe
@@ -186,9 +186,9 @@ public class SoulStreak extends JavaPlugin implements Listener, TabCompleter {
         Player player = event.getPlayer();
         int streak = getStreak(player);
         String tier = tierManager.getTierName(streak);
-        
-        String format = tier + " " + player.getName() + ": " + event.getMessage();
-        event.setFormat(format);
+
+        // AsyncPlayerChatEvent#setFormat uses String.format internally; never embed raw messages here.
+        event.setFormat(tier + " %1$s: %2$s");
     }
 
     /**

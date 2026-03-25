@@ -25,6 +25,8 @@ public class TierManager {
      * Applies tier effects to a player, only updating what has changed
      */
     public void applyTierEffects(Player player, int streak) {
+        if (player == null || !player.isOnline()) return;
+        
         int newTier = calculateTier(streak);
         int currentTier = playerTiers.getOrDefault(player, 0);
         
@@ -133,6 +135,12 @@ public class TierManager {
             double currentHealth = player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).getBaseValue();
             if (Math.abs(currentHealth - targetHealth) > 0.1) {
                 player.getAttribute(org.bukkit.attribute.Attribute.GENERIC_MAX_HEALTH).setBaseValue(targetHealth);
+                // Save persistent data
+                player.getPersistentDataContainer().set(
+                    new org.bukkit.NamespacedKey("soulstreak", "player_hearts"),
+                    org.bukkit.persistence.PersistentDataType.DOUBLE, 
+                    targetHealth
+                );
             }
         }
     }

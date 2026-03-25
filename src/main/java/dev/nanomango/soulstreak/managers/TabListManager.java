@@ -16,11 +16,9 @@ public class TabListManager {
     
     private final TierManager tierManager;
     private final Set<Player> dirtyPlayers = ConcurrentHashMap.newKeySet();
-    private final Object tabUpdateTask;
     
-    public TabListManager(TierManager tierManager, Object tabUpdateTask) {
+    public TabListManager(TierManager tierManager) {
         this.tierManager = tierManager;
-        this.tabUpdateTask = tabUpdateTask;
     }
     
     /**
