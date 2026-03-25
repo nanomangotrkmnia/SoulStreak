@@ -82,6 +82,10 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program. If not, see <https://www.gnu.org/licenses/>.
 
+## Modrinth
+
+SoulStreak is a high-performance PvP streak system that rewards skilled players with tier-based bonuses and heart management. Build kill streaks to unlock powerful abilities including Fire Resistance, Strength, Speed, and bonus hearts. Features persistent data storage, optimized performance for large servers, and full Folia compatibility. Perfect for competitive PvP servers looking to add engaging progression mechanics.
+
 ## Support
 
 For issues or feature requests, please contact the plugin author.
