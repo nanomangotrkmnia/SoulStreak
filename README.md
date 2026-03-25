@@ -1,33 +1,41 @@
-# StreakSoul Plugin for Minecraft 1.21.11 Paper
+# SoulStreak Plugin for Minecraft 1.21.1 Paper
 
-A PvP streak system with tier-based bonuses and soul drops for Minecraft Paper servers.
+A PvP streak system with tier-based bonuses and heart management for Minecraft Paper servers.
 
 ## Features
 
 - **Kill Streak System**: Track player kills with persistent data storage
 - **Tier-Based Rewards**: Unlock bonuses as you build your streak
-- **Soul Drops**: Defeat high-tier players to collect their souls
-- **Right-Click Souls**: Consume souls for instant streak bonuses
+- **Heart Management**: Craft and withdraw hearts for health management
+- **Persistent Data**: Heart and streak data survive server restarts
 
 ## Streak Tiers
 
 | Kills | Tier | Benefits |
 |-------|------|----------|
 | 0-2 | No Streak | Default health (20 hearts) |
-| 3-4 | Tier 1 | +2 hearts (24 total) |
-| 5-9 | Tier 2 | +3 hearts + Fire Resistance (26 total) |
-| 10+ | God Tier | +5 hearts + Fire Resistance + Strength (30 total) |
+| 3-4 | Tier 1 | Entry milestone |
+| 5-9 | Tier 2 | +2 hearts + Fire Resistance (24 total) |
+| 10-14 | Tier 3 | +3 hearts + Fire Resistance + Strength 1 (26 total) |
+| 15+ | Tier 4 | +5 hearts + Fire Resistance + Strength 1 + Speed 1 (30 total) |
 
-## Soul Mechanics
+## Heart Mechanics
 
-- Players with 10+ kills drop a **Green Flame Soul** when killed
-- Souls are Phantom Membrane items with custom lore
-- Right-click a soul to gain **+3 instant kills** to your streak
-- Souls are stackable and consumable
+- **Heart Crafting**: Craft hearts using Diamond + Redstone
+- **Heart Consumption**: Right-click hearts to gain +1 heart
+- **Heart Withdrawal**: Withdraw bonus hearts as items with `/streak withdraw`
+- **Persistent Storage**: Heart data survives server restarts and relogs
 
 ## Commands
 
 - `/streak` - Check your current kill streak and tier
+- `/streak help` - Show available commands
+- `/streak withdraw` - Withdraw bonus hearts as items (requires permission)
+
+## Permissions
+- `soulstreak.use` - Use basic streak commands (default: true)
+- `soulstreak.withdraw` - Withdraw hearts as items (default: op)
+- `soulstreak.admin` - Use administrative commands (default: op)
 
 ## Installation
 
@@ -37,7 +45,7 @@ A PvP streak system with tier-based bonuses and soul drops for Minecraft Paper s
    ```
 
 2. **Install the plugin**:
-   - Copy `target/streaksoul-1.0.0.jar` to your server's `plugins/` folder
+   - Copy `target/soulstreak-1.0.0.jar` to your server's `plugins/` folder
    - Restart the server or run `/reload`
 
 3. **Requirements**:
@@ -46,9 +54,11 @@ A PvP streak system with tier-based bonuses and soul drops for Minecraft Paper s
 
 ## Configuration
 
-The plugin includes basic permissions in `plugin.yml`:
-- `streaksoul.use` - Use streak commands (default: true)
-- `streaksoul.admin` - Administrative permissions (default: op)
+The plugin includes configurable settings in `config.yml`:
+- `streak-loss-on-death`: Amount of streak lost on death (default: 3)
+- `lose-heart-on-no-streak-death`: Whether players lose hearts on death with no streak (default: true)
+- `max-hearts`: Maximum hearts players can have (default: 10)
+- `natural-deaths-affect-nothing`: Whether natural deaths affect streak/hearts (default: true)
 
 ## Technical Details
 
