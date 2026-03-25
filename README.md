@@ -1,4 +1,4 @@
-# SoulStreak Plugin for Minecraft 1.21.1 Paper
+# SoulStreak Plugin for Minecraft 1.21.11 Paper
 
 A PvP streak system with tier-based bonuses and heart management for Minecraft Paper servers.
 
@@ -49,7 +49,7 @@ A PvP streak system with tier-based bonuses and heart management for Minecraft P
    - Restart the server or run `/reload`
 
 3. **Requirements**:
-   - Minecraft 1.21.1 Paper server
+   - Minecraft 1.21.11 Paper server
    - Java 21 or higher
 
 ## Configuration
@@ -63,7 +63,7 @@ The plugin includes configurable settings in `config.yml`:
 ## Technical Details
 
 - Uses Bukkit's Persistent Data API for streak storage
-- Compatible with Minecraft 1.21.1 API
+- Compatible with Minecraft 1.21.11 API
 - Built with Maven for easy compilation
 - No external dependencies required
 
